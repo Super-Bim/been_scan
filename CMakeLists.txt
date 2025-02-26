@@ -5,20 +5,22 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(OpenSSL REQUIRED)
+find_path(GMP_INCLUDE_DIRS gmp.h)
 find_library(GMP_LIBRARIES gmp)
 find_library(GMPXX_LIBRARIES gmpxx)
+find_path(SECP256K1_INCLUDE_DIRS secp256k1.h)
 find_library(SECP256K1_LIBRARIES secp256k1)
 
-if(NOT GMP_LIBRARIES)
-    message(FATAL_ERROR "GMP library not found")
+if(NOT GMP_LIBRARIES OR NOT GMP_INCLUDE_DIRS)
+    message(FATAL_ERROR "GMP library not found. Please install libgmp-dev.")
 endif()
 
 if(NOT GMPXX_LIBRARIES)
-    message(FATAL_ERROR "GMPXX library not found")
+    message(FATAL_ERROR "GMPXX library not found. Please install libgmp-dev.")
 endif()
 
-if(NOT SECP256K1_LIBRARIES)
-    message(FATAL_ERROR "secp256k1 library not found")
+if(NOT SECP256K1_LIBRARIES OR NOT SECP256K1_INCLUDE_DIRS)
+    message(FATAL_ERROR "secp256k1 library not found. Please install it as per the README instructions.")
 endif()
 
 include(CheckCXXSourceCompiles)
@@ -53,6 +55,8 @@ add_executable(been_scan
 
 target_include_directories(been_scan PRIVATE
     ${OPENSSL_INCLUDE_DIR}
+    ${GMP_INCLUDE_DIRS}
+    ${SECP256K1_INCLUDE_DIRS}
 )
 
 target_link_libraries(been_scan

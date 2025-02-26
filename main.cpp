@@ -12,10 +12,7 @@
 #include "bitcoin_utils.h"
 #include "bloom_filter.h"
 
-const uint64_t MAX_PRIVATE_KEY_1 = 0xFFFFFFFFFFFFFFFF;
-const uint64_t MAX_PRIVATE_KEY_2 = 0xFFFFFFFFFFFFFFFE;
-const uint64_t MAX_PRIVATE_KEY_3 = 0xBAAEDCE6AF48A03B;
-const uint64_t MAX_PRIVATE_KEY_4 = 0xBFD25E8CD0364140;
+const mpz_class MAX_PRIVATE_KEY("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364140", 16);
 const int KEYS_AMOUNT = 500000;
 const std::string ADDRESS_FILE = "address.txt";
 const std::string OUTPUT_FILE = "results.txt";
@@ -76,36 +73,70 @@ std::string int_to_hex(uint64_t value, int width) {
     return ss.str();
 }
 
-void check_interval(const mpz_class& start_key, const mpz_class& end_key, 
-                     BloomFilter* bloom_filter, const std::set<std::string>& target_addresses) {
-    for (mpz_class index = start_key; index <= end_key; index++) {
-        global_keys_checked++;
+mpz_class generate_random_mpz(const mpz_class& min, const mpz_class& max) {
+    std::random_device rd;
+    std::mt19937_64 gen(rd());
+    
+    mpz_class range = max - min + 1;
+    mpz_class result;
+    mpz_class mask;
+
+    size_t bits = mpz_sizeinbase(range.get_mpz_t(), 2);
+    
+    do {
+        std::vector<unsigned char> buffer((bits + 7) / 8);
+        std::generate(buffer.begin(), buffer.end(), std::ref(gen));
         
-        std::string private_key = index.get_str(16);
-        while (private_key.length() < 64) {
-            private_key = "0" + private_key;
+        mpz_import(result.get_mpz_t(), buffer.size(), 1, sizeof(buffer[0]), 0, 0, buffer.data());
+        
+        mpz_ui_pow_ui(mask.get_mpz_t(), 2, bits);
+        mpz_sub_ui(mask.get_mpz_t(), mask.get_mpz_t(), 1);
+        mpz_and(result.get_mpz_t(), result.get_mpz_t(), mask.get_mpz_t());
+        
+    } while (result >= range);
+
+    return min + result;
+}
+
+void check_interval(BloomFilter* bloom_filter, const std::set<std::string>& target_addresses, 
+                    const mpz_class& thread_start, const mpz_class& thread_end, int thread_id) {
+    std::random_device rd;
+    std::mt19937_64 gen(rd());
+
+    while (true) {
+        mpz_class random_start_key = generate_random_mpz(thread_start, thread_end - KEYS_AMOUNT + 1);
+        mpz_class thread_end_key = random_start_key + KEYS_AMOUNT - 1;
+
+        if (thread_end_key > thread_end) {
+            thread_end_key = thread_end; // Ajustar para não ultrapassar o limite
         }
-        
-        std::string compressed_address = private_key_to_compressed_address(private_key);
 
-        if (bloom_filter->contains(compressed_address)) {
-            if (target_addresses.find(compressed_address) != target_addresses.end()) {
-                std::lock_guard<std::mutex> lock(mtx_console);
-                std::cout << "\nFound! Key: " << private_key 
-                          << " -> Address: " << compressed_address << std::endl;
+        std::cout << "\nThread " << thread_id << " checking range: from 0x" << random_start_key.get_str(16) 
+                  << " to 0x" << thread_end_key.get_str(16) << std::endl;
 
-                std::lock_guard<std::mutex> lock_result(mtx_result);
-                std::vector<std::pair<std::string, std::string>> result = {
-                    {private_key, compressed_address}
-                };
-                save_results(result);
-                
-                key_found = true;
-                break;
+        for (mpz_class index = random_start_key; index <= thread_end_key; ++index) {
+            global_keys_checked++;
+            std::string private_key = index.get_str(16);
+            while (private_key.length() < 64) {
+                private_key = "0" + private_key;
+            }
+
+            std::string compressed_address = private_key_to_compressed_address(private_key);
+
+            if (bloom_filter->contains(compressed_address)) {
+                if (target_addresses.find(compressed_address) != target_addresses.end()) {
+                    std::lock_guard<std::mutex> lock(mtx_console);
+                    std::cout << "\nFound! Key: " << private_key 
+                              << " -> Address: " << compressed_address << std::endl;
+
+                    std::lock_guard<std::mutex> lock_result(mtx_result);
+                    std::vector<std::pair<std::string, std::string>> result = {
+                        {private_key, compressed_address}
+                    };
+                    save_results(result);
+                }
             }
         }
-        
-        if (key_found) break;
     }
 }
 
@@ -146,55 +177,47 @@ void search_random_range(const mpz_class& start_range,
 
     std::vector<std::thread> threads;
     mpz_class keys_per_thread = (end_range - start_range + 1) / num_threads;
-    
-    std::cout << "Total range will be divided into " << num_threads << " segments." << std::endl;
-    
+
     for (unsigned int i = 0; i < num_threads; i++) {
         mpz_class thread_start = start_range + i * keys_per_thread;
         mpz_class thread_end = (i == num_threads - 1) ? end_range : thread_start + keys_per_thread - 1;
-        
-        mpz_class num_keys = thread_end - thread_start + 1;
-        
-        std::cout << "Thread " << i+1 << " will check range: from 0x" << thread_start.get_str(16)
-                  << " to 0x" << thread_end.get_str(16) 
-                  << " (" << num_keys.get_str(10) << " keys)" << std::endl;
-        
-        threads.push_back(std::thread(check_interval, thread_start, thread_end, 
-                                      bloom_filter, std::ref(target_addresses)));
+
+        threads.push_back(std::thread(check_interval, bloom_filter, std::ref(target_addresses), 
+                                      thread_start, thread_end, i + 1));
     }
-    
+
     std::atomic<bool> running(true);
     std::thread stats_thread([&]() {
         auto start_time = std::chrono::high_resolution_clock::now();
         uint64_t last_count = 0;
-        
+
         while (running) {
             std::this_thread::sleep_for(std::chrono::seconds(1));
-            
+
             auto now = std::chrono::high_resolution_clock::now();
             auto total_time = std::chrono::duration_cast<std::chrono::seconds>(now - start_time).count();
-            
+
             uint64_t current_count = global_keys_checked;
             uint64_t keys_last_second = current_count - last_count;
             double total_rate = total_time > 0 ? static_cast<double>(current_count) / total_time : 0;
-            
+
             std::lock_guard<std::mutex> lock(mtx_console);
-            std::cout << "\rChecked: " << current_count 
-                      << " | Last second: " << keys_last_second 
-                      << " | Average: " << std::fixed << std::setprecision(2) << total_rate 
+            std::cout << "\rChecked: " << current_count
+                      << " | Last second: " << keys_last_second
+                      << " | Average: " << std::fixed << std::setprecision(2) << total_rate
                       << " keys/sec | Time: " << total_time << "s" << std::flush;
-            
+
             last_count = current_count;
         }
     });
-    
+
     for (auto& t : threads) {
         if (t.joinable()) t.join();
     }
-    
+
     running = false;
     if (stats_thread.joinable()) stats_thread.join();
-    
+
     delete bloom_filter;
 }
 
@@ -215,10 +238,10 @@ int main() {
         mpz_class MAX_PRIVATE_KEY("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364140", 16);
         
         if (start_range < 0 || 
-            end_range > MAX_PRIVATE_KEY || 
-            start_range >= end_range) {
-            std::cout << "Invalid range. Make sure the start key is less than the end key and both are within the allowed limit." << std::endl;
-            return 1;
+        end_range > MAX_PRIVATE_KEY || 
+        start_range >= end_range) {
+        std::cout << "Invalid range. Make sure the start key is less than the end key and both are within the allowed limit." << std::endl;
+        return 1;
         }
 
         search_random_range(start_range, end_range, KEYS_AMOUNT);
