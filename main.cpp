@@ -9,6 +9,7 @@
 #include <mutex>
 #include <vector>
 #include <atomic>
+#include <condition_variable>
 #include "bitcoin_utils.h"
 #include "bloom_filter.h"
 
@@ -21,6 +22,9 @@ std::mutex mtx_console;
 std::mutex mtx_result;
 std::atomic<uint64_t> global_keys_checked(0);
 std::atomic<bool> key_found(false);
+std::mutex mtx_sync;
+std::condition_variable cv_sync;
+int threads_completed = 0;
 
 std::pair<BloomFilter*, std::set<std::string>> load_addresses() {
     try {
@@ -99,7 +103,7 @@ mpz_class generate_random_mpz(const mpz_class& min, const mpz_class& max) {
 }
 
 void check_interval(BloomFilter* bloom_filter, const std::set<std::string>& target_addresses, 
-                    const mpz_class& thread_start, const mpz_class& thread_end, int thread_id) {
+                    const mpz_class& thread_start, const mpz_class& thread_end, int thread_id, int num_threads) {
     std::random_device rd;
     std::mt19937_64 gen(rd());
 
@@ -108,7 +112,7 @@ void check_interval(BloomFilter* bloom_filter, const std::set<std::string>& targ
         mpz_class thread_end_key = random_start_key + KEYS_AMOUNT - 1;
 
         if (thread_end_key > thread_end) {
-            thread_end_key = thread_end; // Ajustar para não ultrapassar o limite
+            thread_end_key = thread_end;
         }
 
         std::cout << "\nThread " << thread_id << " checking range: from 0x" << random_start_key.get_str(16) 
@@ -135,6 +139,14 @@ void check_interval(BloomFilter* bloom_filter, const std::set<std::string>& targ
                     };
                     save_results(result);
                 }
+            }
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(mtx_sync);
+            threads_completed++;
+            if (threads_completed == num_threads) {
+                cv_sync.notify_one();
             }
         }
     }
@@ -183,7 +195,7 @@ void search_random_range(const mpz_class& start_range,
         mpz_class thread_end = (i == num_threads - 1) ? end_range : thread_start + keys_per_thread - 1;
 
         threads.push_back(std::thread(check_interval, bloom_filter, std::ref(target_addresses), 
-                                      thread_start, thread_end, i + 1));
+                                      thread_start, thread_end, i + 1, num_threads));
     }
 
     std::atomic<bool> running(true);
@@ -192,24 +204,30 @@ void search_random_range(const mpz_class& start_range,
         uint64_t last_count = 0;
 
         while (running) {
-            std::this_thread::sleep_for(std::chrono::seconds(1));
+            std::this_thread::sleep_for(std::chrono::seconds(5));
 
             auto now = std::chrono::high_resolution_clock::now();
             auto total_time = std::chrono::duration_cast<std::chrono::seconds>(now - start_time).count();
 
             uint64_t current_count = global_keys_checked;
-            uint64_t keys_last_second = current_count - last_count;
+            uint64_t keys_last_minute = current_count - last_count;
             double total_rate = total_time > 0 ? static_cast<double>(current_count) / total_time : 0;
 
             std::lock_guard<std::mutex> lock(mtx_console);
             std::cout << "\rChecked: " << current_count
-                      << " | Last second: " << keys_last_second
+                      << " | Last minute: " << keys_last_minute
                       << " | Average: " << std::fixed << std::setprecision(2) << total_rate
                       << " keys/sec | Time: " << total_time << "s" << std::flush;
 
             last_count = current_count;
         }
     });
+
+    {
+        std::unique_lock<std::mutex> lock(mtx_sync);
+        cv_sync.wait(lock, [&]() { return threads_completed == num_threads; });
+        threads_completed = 0;
+    }
 
     for (auto& t : threads) {
         if (t.joinable()) t.join();
@@ -222,6 +240,7 @@ void search_random_range(const mpz_class& start_range,
 }
 
 int main() {
+    std::cout << "Welcome to Been_scan Bitcoin key search ;D" << std::endl;
     std::cout << "Search for Bitcoin private keys in a range" << std::endl;
     std::string start_hex, end_hex;
     
