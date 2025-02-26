@@ -118,9 +118,27 @@ void search_random_range(const mpz_class& start_range,
         return;
     }
 
-    unsigned int num_threads = std::thread::hardware_concurrency();
-    num_threads = std::max(2u, std::min(16u, num_threads));
+    unsigned int available_threads = std::thread::hardware_concurrency();
+    std::cout << "Your system has " << available_threads << " available threads." << std::endl;
     
+    unsigned int num_threads;
+    std::cout << "Enter the number of threads to use (recommended: 1-" << available_threads << "): ";
+    std::cin >> num_threads;
+    
+    if (num_threads < 1) {
+        std::cout << "Invalid number of threads. Using 1 thread." << std::endl;
+        num_threads = 1;
+    } else if (num_threads > 64) {
+        std::cout << "Warning: Using a very high number of threads may affect system performance." << std::endl;
+        std::cout << "Do you want to continue with " << num_threads << " threads? (y/n): ";
+        char confirm;
+        std::cin >> confirm;
+        if (confirm != 'y' && confirm != 'Y') {
+            num_threads = available_threads;
+            std::cout << "Using " << num_threads << " threads instead." << std::endl;
+        }
+    }
+
     std::cout << "Using " << num_threads << " threads for parallel processing." << std::endl;
 
     std::vector<std::thread> threads;
