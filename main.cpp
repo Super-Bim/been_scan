@@ -118,6 +118,9 @@ void search_random_range(const mpz_class& start_range,
         return;
     }
 
+    std::cout << "Defined range: from 0x" << start_range.get_str(16) 
+              << " to 0x" << end_range.get_str(16) << std::endl;
+
     unsigned int available_threads = std::thread::hardware_concurrency();
     std::cout << "Your system has " << available_threads << " available threads." << std::endl;
     
@@ -144,9 +147,17 @@ void search_random_range(const mpz_class& start_range,
     std::vector<std::thread> threads;
     mpz_class keys_per_thread = (end_range - start_range + 1) / num_threads;
     
+    std::cout << "Total range will be divided into " << num_threads << " segments." << std::endl;
+    
     for (unsigned int i = 0; i < num_threads; i++) {
         mpz_class thread_start = start_range + i * keys_per_thread;
         mpz_class thread_end = (i == num_threads - 1) ? end_range : thread_start + keys_per_thread - 1;
+        
+        mpz_class num_keys = thread_end - thread_start + 1;
+        
+        std::cout << "Thread " << i+1 << " will check range: from 0x" << thread_start.get_str(16)
+                  << " to 0x" << thread_end.get_str(16) 
+                  << " (" << num_keys.get_str(10) << " keys)" << std::endl;
         
         threads.push_back(std::thread(check_interval, thread_start, thread_end, 
                                       bloom_filter, std::ref(target_addresses)));
