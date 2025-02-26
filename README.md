@@ -89,4 +89,5 @@ sudo find / -name libsecp256k1.so
 Bitcoin Tips Address
 -------------------
 If you find this software useful, consider sending a tip to:
+
 198DXhcUTDUdBfNZRJzrWdS4LFuif5eb2L
