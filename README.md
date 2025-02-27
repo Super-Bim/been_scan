@@ -39,10 +39,7 @@ Installation (Linux)
 3. Build Been Scan:
 
    ```
-   cd /path/to/been_scan
-   mkdir -p build
-   cd build
-   cmake ..
+   cmake .
    make
    ```
 
